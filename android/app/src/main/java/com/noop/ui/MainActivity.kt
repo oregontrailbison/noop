@@ -9,10 +9,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,6 +23,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.noop.BuildConfig
@@ -39,8 +42,6 @@ import kotlinx.coroutines.launch
  * dark-only, so we draw edge-to-edge over the near-black [Palette.surfaceBase].
  */
 class MainActivity : ComponentActivity() {
-    private val appViewModel: AppViewModel by viewModels()
-
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             // Permission results flow back into the BLE client's own runtime checks;
@@ -87,16 +88,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             NoopTheme {
-                NoopRoot(appViewModel)
+                NoopRoot()
             }
         }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        // When "Keep connected in the background" is OFF, reopening the app should reconnect the last
-        // active strap automatically instead of making the user navigate to Live and tap Connect.
-        appViewModel.reconnectOnAppOpenIfNeeded()
     }
 
     /** Request the BLE permissions appropriate to the running OS version. */
@@ -663,6 +657,23 @@ object NoopPrefs {
 fun NoopRoot(appViewModel: AppViewModel = viewModel()) {
     val context = LocalContext.current
     val prefs = remember { NoopPrefs.of(context) }
+
+    // The setting is phrased in APP terms ("Keep connected in the background"), so the hook must live on
+    // the process lifecycle rather than an Activity teardown edge. ON_STOP is the real "app went to the
+    // background" moment; ON_START is the matching reopen edge. This makes the close/reopen contract
+    // deterministic and gives the user the normal reconnect progress on app open.
+    DisposableEffect(appViewModel) {
+        val lifecycle = ProcessLifecycleOwner.get().lifecycle
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> appViewModel.reconnectOnAppOpenIfNeeded()
+                Lifecycle.Event.ON_STOP -> appViewModel.disconnectOnAppBackgroundIfNeeded()
+                else -> Unit
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
 
     var onboarded by remember {
         mutableStateOf(prefs.getBoolean(NoopPrefs.KEY_ONBOARDED, false))

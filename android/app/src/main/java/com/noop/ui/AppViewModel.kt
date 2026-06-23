@@ -710,6 +710,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ble.reconnectToAddress(saved.first, saved.second)
     }
 
+    /**
+     * The whole app has moved to the background. When "Keep connected in the background" is OFF, this is
+     * the moment the setting should take effect: drop the foreground service (if any) and let go of the
+     * BLE link now, not later when/if the Activity-scoped ViewModel is destroyed.
+     */
+    fun disconnectOnAppBackgroundIfNeeded() {
+        if (NoopPrefs.backgroundConnection(appContext)) return
+        WhoopConnectionService.stop(appContext)
+        ble.disconnect()
+        hrWindow.clear()
+        _bpm.value = null
+    }
+
     /** Snapshot the user's body profile from SharedPreferences as an analytics [UserProfile]. */
     private fun currentProfile(): UserProfile = UserProfile(
         weightKg = profileStore.weightKg,
