@@ -9,6 +9,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -38,6 +39,7 @@ import kotlinx.coroutines.launch
  * dark-only, so we draw edge-to-edge over the near-black [Palette.surfaceBase].
  */
 class MainActivity : ComponentActivity() {
+    private val appViewModel: AppViewModel by viewModels()
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -85,9 +87,16 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             NoopTheme {
-                NoopRoot()
+                NoopRoot(appViewModel)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // When "Keep connected in the background" is OFF, reopening the app should reconnect the last
+        // active strap automatically instead of making the user navigate to Live and tap Connect.
+        appViewModel.reconnectOnAppOpenIfNeeded()
     }
 
     /** Request the BLE permissions appropriate to the running OS version. */
@@ -651,10 +660,9 @@ object NoopPrefs {
  * state on each transition.
  */
 @Composable
-fun NoopRoot() {
+fun NoopRoot(appViewModel: AppViewModel = viewModel()) {
     val context = LocalContext.current
     val prefs = remember { NoopPrefs.of(context) }
-    val appViewModel: AppViewModel = viewModel()
 
     var onboarded by remember {
         mutableStateOf(prefs.getBoolean(NoopPrefs.KEY_ONBOARDED, false))

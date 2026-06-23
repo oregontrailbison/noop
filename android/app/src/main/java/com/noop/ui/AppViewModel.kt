@@ -687,6 +687,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ble.reconnectToAddress(saved.first, saved.second)
     }
 
+    /**
+     * The app has become foreground-visible again. If the user turned OFF "Keep connected in the
+     * background", NOOP deliberately drops the long-lived connection when the UI goes away — but reopening
+     * the app should still reconnect the remembered active strap automatically instead of making the user
+     * visit Live and tap "Scan and connect" every time. We reconnect DIRECTLY to the last bonded strap
+     * (no scan, no foreground service promotion), mirroring the launch path but only when the background
+     * service is opted out and there isn't already a live/bonded link.
+     */
+    fun reconnectOnAppOpenIfNeeded() {
+        val saved = NoopPrefs.lastDevice(appContext) ?: return
+        // Keep the picker / scan family honest whenever a remembered strap exists, even if we decide not
+        // to reconnect right now (same contract as launch reconnect).
+        _selectedModel.value = saved.second
+        if (!shouldReconnectOnAppOpen(
+                backgroundConnection = NoopPrefs.backgroundConnection(appContext),
+                hasSavedDevice = true,
+                connected = ble.state.value.connected,
+                bonded = ble.state.value.bonded,
+            )
+        ) return
+        ble.reconnectToAddress(saved.first, saved.second)
+    }
+
     /** Snapshot the user's body profile from SharedPreferences as an analytics [UserProfile]. */
     private fun currentProfile(): UserProfile = UserProfile(
         weightKg = profileStore.weightKg,
@@ -1730,6 +1753,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        /**
+         * App-open reconnect gate for the opt-out background path. When background connection is ON, the
+         * foreground service already owns reconnects. When it's OFF, reopening the app should reconnect a
+         * remembered strap only if we don't already have a live/bonded link.
+         */
+        internal fun shouldReconnectOnAppOpen(
+            backgroundConnection: Boolean,
+            hasSavedDevice: Boolean,
+            connected: Boolean,
+            bonded: Boolean,
+        ): Boolean = hasSavedDevice && !backgroundConnection && !connected && !bonded
+
         /** Grace before the first scoring pass, letting the first BLE offload land. */
         const val FIRST_OFFLOAD_GRACE_MS = 6_000L
         /** On-device scoring cadence — 15 min, matching the strap offload cadence. */
