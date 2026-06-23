@@ -1752,7 +1752,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         broadcaster.stop()
     }
 
-    private companion object {
+    internal companion object {
         /**
          * App-open reconnect gate for the opt-out background path. When background connection is ON, the
          * foreground service already owns reconnects. When it's OFF, reopening the app should reconnect a
