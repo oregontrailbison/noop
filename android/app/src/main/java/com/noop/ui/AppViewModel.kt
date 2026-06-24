@@ -74,6 +74,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  this Activity-scoped ViewModel and keep streaming under [WhoopConnectionService]. */
     private val noopApp = app as NoopApplication
 
+    /** Pending delayed drop for the opt-out background path. Cancelled the moment the app returns. */
+    private var backgroundDisconnectJob: Job? = null
+
     // Offline store — process-wide, shared with the background service.
     private val repository: WhoopRepository = noopApp.repository
 
@@ -696,6 +699,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * service is opted out and there isn't already a live/bonded link.
      */
     fun reconnectOnAppOpenIfNeeded() {
+        backgroundDisconnectJob?.cancel()
+        backgroundDisconnectJob = null
         val saved = NoopPrefs.lastDevice(appContext) ?: return
         // Keep the picker / scan family honest whenever a remembered strap exists, even if we decide not
         // to reconnect right now (same contract as launch reconnect).
@@ -711,12 +716,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The whole app has moved to the background. When "Keep connected in the background" is OFF, this is
-     * the moment the setting should take effect: drop the foreground service (if any) and let go of the
-     * BLE link now, not later when/if the Activity-scoped ViewModel is destroyed.
+     * The whole app has moved to the background. When "Keep connected in the background" is OFF, schedule
+     * a delayed drop: a brief app switch shouldn't churn the BLE link, but a real "put the phone away"
+     * background should still let it go. If a history offload is in progress when the grace elapses, keep
+     * the link long enough for that sync to finish rather than cutting it mid-backfill.
      */
     fun disconnectOnAppBackgroundIfNeeded() {
         if (NoopPrefs.backgroundConnection(appContext)) return
+        backgroundDisconnectJob?.cancel()
+        backgroundDisconnectJob = viewModelScope.launch {
+            delay(BACKGROUND_DISCONNECT_GRACE_MS)
+            if (ble.state.value.backfilling) {
+                backgroundDisconnectJob = null
+                return@launch
+            }
+            performBackgroundDisconnect()
+            backgroundDisconnectJob = null
+        }
+    }
+
+    /** Shared opt-out background drop: stop any foreground promotion, release the BLE link, clear stale HR. */
+    private fun performBackgroundDisconnect() {
         WhoopConnectionService.stop(appContext)
         ble.disconnect()
         hrWindow.clear()
@@ -1751,14 +1771,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
-        // The BLE client is process-owned (NoopApplication) and may be held up by
-        // WhoopConnectionService, so we never shut it down here. Only drop the connection when the
-        // user hasn't opted into background streaming — otherwise closing the UI would defeat the
-        // foreground service. (We deliberately do NOT call ble.shutdown(): the client outlives the
-        // ViewModel and is reused by the next Activity.)
-        if (!NoopPrefs.backgroundConnection(appContext)) {
-            ble.disconnect()
-        }
+        // The process lifecycle owns the opt-out background drop now; a ViewModel can be cleared for
+        // reasons unrelated to the app actually backgrounding (e.g. recreation), so disconnecting here
+        // would be the wrong edge. Just cancel any pending delayed drop owned by this instance.
+        backgroundDisconnectJob?.cancel()
+        backgroundDisconnectJob = null
         // Release the HR-broadcast radio when this ViewModel goes away — the broadcast is a foreground
         // convenience (read your strap HR on nearby gym kit), not a background service. A relaunch
         // re-resumes it from the persisted toggle.
@@ -1777,6 +1794,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             connected: Boolean,
             bonded: Boolean,
         ): Boolean = hasSavedDevice && !backgroundConnection && !connected && !bonded
+
+        /** Grace after the app backgrounds before the opt-out path drops the link. Cancelled on reopen. */
+        const val BACKGROUND_DISCONNECT_GRACE_MS = 60_000L
 
         /** Grace before the first scoring pass, letting the first BLE offload land. */
         const val FIRST_OFFLOAD_GRACE_MS = 6_000L
